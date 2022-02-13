@@ -5,4 +5,7 @@
 
 This program allows you to manage the fans and memory of MSI laptops
 
-## # WAIT UNTIL I FINISH WRITING ALL THE INFO
+The application is a gui of project: https://github.com/kykc/MsiFanControl
+and plus it manages aplications memory (Trim Memory)
+
+##### I tested the program only on my pc. I take no responsibility for its operation
