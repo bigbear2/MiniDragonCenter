@@ -19,6 +19,7 @@ begin
   Application.Title:='MiniDragonCenter v2022.1';
   Application.Scaled:=True;
   Application.Initialize;
+  Application.ShowMainForm:= False;
   Application.CreateForm(TfrmMain, frmMain);
   Application.Run;
 end.

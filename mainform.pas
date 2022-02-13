@@ -6,7 +6,8 @@ interface
 
 uses
   Windows, Classes, SysUtils, Forms, Controls, Graphics, Dialogs, StdCtrls,
-  ComCtrls, ExtCtrls, Spin, FunctionsUtils, ShellApi, jwatlhelp32, jwapsapi, IniFiles;
+  ComCtrls, ExtCtrls, Spin, ValEdit, FunctionsUtils, ShellApi, jwatlhelp32,
+  jwapsapi, IniFiles;
 
 type
   DWORDLONG = uint64;
@@ -28,13 +29,17 @@ type
   { TfrmMain }
 
   TfrmMain = class(TForm)
+    apApp: TApplicationProperties;
     btnApply: TButton;
-    btnStatus: TButton;
+    btnHide: TButton;
     btnTrimMemory: TButton;
-    Button1: TButton;
     cbbMode: TComboBox;
+    chkStartMinimized: TCheckBox;
+    chkMinimizedWhenClose: TCheckBox;
     chkTrimMemoryEvery: TCheckBox;
+    chkStartUpWindows: TCheckBox;
     chkTrimMemoryWhenOver: TCheckBox;
+    chkRefreshMemoryStatus: TCheckBox;
     chkTrimMemoryWhenProgramStart: TCheckBox;
     edtAdvanced1: TEdit;
     edtAdvanced10: TEdit;
@@ -51,7 +56,6 @@ type
     gbMemoryOptions: TGroupBox;
     ilMemory: TImageList;
     Image1: TImage;
-    Image2: TImage;
     lblTotalMem: TLabel;
     lblAdvanced1: TLabel;
     lblAdvanced10: TLabel;
@@ -71,8 +75,9 @@ type
     pcAdvanced: TPageControl;
     pcMain: TPageControl;
     pbMemory: TProgressBar;
-    SpinEdit1: TSpinEdit;
-    SpinEdit2: TSpinEdit;
+    seTrimMemoryEvery: TSpinEdit;
+    seTrimMemoryWhenOver: TSpinEdit;
+    seRefreshMemoryStatus: TSpinEdit;
     tsAbout: TTabSheet;
     tmrMemoryStatus: TTimer;
     tsMemory: TTabSheet;
@@ -95,20 +100,22 @@ type
     tsLog: TTabSheet;
     tsGeneral: TTabSheet;
     tiTray: TTrayIcon;
+    ValueListEditor1: TValueListEditor;
+    procedure apAppMinimize(Sender: TObject);
     procedure btnApplyClick(Sender: TObject);
-    procedure btnStatusClick(Sender: TObject);
+    procedure btnHideClick(Sender: TObject);
     procedure btnTrimMemoryClick(Sender: TObject);
-    procedure Button1Click(Sender: TObject);
-    procedure Button2Click(Sender: TObject);
     procedure cbbModeChange(Sender: TObject);
     procedure FormActivate(Sender: TObject);
     procedure FormClose(Sender: TObject; var CloseAction: TCloseAction);
     procedure FormCreate(Sender: TObject);
     procedure FormShow(Sender: TObject);
     procedure tbAdvanced1Change(Sender: TObject);
+    procedure tiTrayDblClick(Sender: TObject);
     procedure tmrMemoryStatusTimer(Sender: TObject);
   private
     FActivated: boolean;
+    procedure GenerateIconsNumber();
   public
     procedure LoadOptions();
     procedure SaveOptions();
@@ -116,6 +123,7 @@ type
     procedure Basic();
     procedure Auto();
     procedure Advanced();
+    procedure Apply();
     procedure MemoryUsage();
     procedure TrimMemory(const ShowMessage: boolean = False);
   end;
@@ -156,10 +164,10 @@ begin
   DrawFlags := DT_END_ELLIPSIS or DT_NOPREFIX or DT_WORDBREAK or DT_EDITCONTROL or DT_CENTER;
   DrawText(Canvas.Handle, PChar(S), -1, DrawRect, DrawFlags or DT_CALCRECT);
   DrawRect.Right := R.Right;
-  if DrawRect.Bottom < R.Bottom then
-    OffsetRect(DrawRect, 0, (R.Bottom - DrawRect.Bottom) div 2)
-  else
-    DrawRect.Bottom := R.Bottom;
+  // if DrawRect.Bottom < R.Bottom then
+  //   OffsetRect(DrawRect, 0, (R.Bottom - DrawRect.Bottom) div 2)
+  // else
+  DrawRect.Bottom := R.Bottom;
   ZeroMemory(@DrawParams, SizeOf(DrawParams));
   DrawParams.cbSize := SizeOf(DrawParams);
   DrawTextEx(Canvas.Handle, PChar(S), -1, DrawRect, DrawFlags, @DrawParams);
@@ -270,11 +278,67 @@ begin
   end;
 end;
 
+procedure TfrmMain.GenerateIconsNumber();
+var
+  ImageNumber: TBitmap;
+  RImage, RText: TRect;
+  I: integer;
+  IconNumber: TIcon;
+begin
+  SetRect(RImage, 0, 0, 16, 16);
+  SetRect(RText, 1, 1, 15, 15);
+  ImageNumber := TBitmap.Create;
+  ImageNumber.SetSize(16, 16);
+  IconNumber := TIcon.Create;
+
+  with ImageNumber.Canvas do
+  begin
+    Font.Color := clBlack;
+    Font.Name := 'Consolas';
+    Font.Size := 8;
+  end;
+
+  for I := 1 to 100 do
+  begin
+
+    with ImageNumber.Canvas do
+    begin
+
+      if I < 65 then
+      begin
+        ImageNumber.Canvas.Brush.Color := $81F682;
+        ImageNumber.Canvas.Pen.Color := $1EB100;
+      end
+      else
+      if I < 70 then
+      begin
+        ImageNumber.Canvas.Brush.Color := $93F2F6;
+        ImageNumber.Canvas.Pen.Color := $00BAEF;
+      end
+      else
+      begin
+        ImageNumber.Canvas.Brush.Color := $5E7EFF;
+        ImageNumber.Canvas.Pen.Color := $0000D6;
+      end;
+
+      FillRect(RImage);
+      Rectangle(RImage);
+      DrawTextCentered(ImageNumber.Canvas, RText, I.ToString);
+
+      IconNumber.Assign(ImageNumber);
+      ilMemory.AddIcon(IconNumber);
+    end;
+  end;
+  IconNumber.Free;
+  ImageNumber.Free;
+end;
+
 procedure TfrmMain.MemoryUsage();
 var
   MemStatus: TMemoryStatusEx;
 
-  MemTot, MemUsg, MemAvi: cardinal;
+  MemTot, MemUsg, MemAvi, Percent: cardinal;
+  IconImage: TIcon;
 begin
 
   // initialize the structure
@@ -296,14 +360,20 @@ begin
   MemTot := MemStatus.ullTotalPhys div (1024 * 1024);
   MemAvi := MemStatus.ullAvailPhys div (1024 * 1024);
   MemUsg := MemTot - MemAvi;
-
+  Percent := Trunc(CalcolatePercent(MemTot, MemUsg));
   pbMemory.Max := MemTot;
   pbMemory.Position := MemUsg;
 
   lblTotalMem.Caption := 'Total Memory (MB): ' + MemTot.ToString;
   lblUsageMem.Caption := 'Usage Memory (MB): ' + (MemTot - MemUsg).ToString;
-  lblPercentMem.Caption := 'Percent Used Memory (%): ' + (CalcolatePercent(MemTot, MemUsg)).ToString;
+  lblPercentMem.Caption := 'Percent Used Memory (%): ' + (Percent).ToString;
 
+
+
+
+  IconImage := TIcon.Create;
+  ilMemory.GetIcon(Percent - 1, IconImage);
+  tiTray.Icon := IconImage;
 end;
 
 
@@ -314,9 +384,9 @@ var
   MyHandle: THandle;
   Struct: TProcessEntry32;
   BeforeTrim, AfterTrim: integer;
-
+  Error: boolean;
 begin
-
+  Error := False;
   BeforeTrim := pbMemory.Position;
   try
     MyHandle := CreateToolHelp32SnapShot(TH32CS_SNAPPROCESS, 0);
@@ -332,17 +402,34 @@ begin
 
   except
     on Exception do
-      Debug('Error showing process list');
+    begin
+      Error := True;
+      Debug('Error trim memory!');
+    end;
   end;
 
   MemoryUsage();
   AfterTrim := pbMemory.Position;
 
   AfterTrim := BeforeTrim - AfterTrim;
-  if ShowMessage then
-    Messaggio('Memory Trim (MB): ' + AfterTrim.ToString, mtInformation)
+  //if ShowMessage then
+  //  Messaggio('Memory Trim (MB): ' + AfterTrim.ToString, mtInformation)
+  //else
+  //  Debug('Error showing process list');
+
+
+  if Error then
+  begin
+    tiTray.BalloonFlags := bfError;
+    tiTray.Hint := 'Error trim memory!';
+  end
   else
-    Debug('Error showing process list');
+  begin
+    tiTray.BalloonFlags := bfInfo;
+    tiTray.Hint := 'Memory Trim: ' + AfterTrim.ToString + 'MB';
+
+  end;
+  tiTray.ShowBalloonHint;
 end;
 
 procedure TfrmMain.LoadOptions();
@@ -368,10 +455,23 @@ begin
     tbAdvanced12.Position := ReadInteger('Fans', 'AdvancedGPU6', 80);
     //MEMORY
     chkTrimMemoryEvery.Checked := ReadBool('Memory', 'TrimMemoryEvery', False);
+    seTrimMemoryEvery.Value := ReadInteger('Memory', 'TrimMemoryEveryValue', 10);
     chkTrimMemoryWhenOver.Checked := ReadBool('Memory', 'TrimMemoryWhenOver', False);
+    seTrimMemoryWhenOver.Value := ReadInteger('Memory', 'TrimMemoryWhenOverValue', 65);
+    chkRefreshMemoryStatus.Checked := ReadBool('Memory', 'RefreshMemoryStatus', True);
+    seRefreshMemoryStatus.Value := ReadInteger('Memory', 'RefreshMemoryStatusValue', 1);
+
+
     chkTrimMemoryWhenProgramStart.Checked := ReadBool('Memory', 'TrimMemoryWhenProgramStart', False);
+    //OPTIONS
+    chkStartUpWindows.Checked := ReadBool('Options', 'StartUpWindows', False);
+    chkStartMinimized.Checked := ReadBool('Options', 'StartMinimized', True);
+    chkMinimizedWhenClose.Checked := ReadBool('Options', 'MinimizedWhenClose', True);
     Free;
   end;
+
+  tmrMemoryStatus.Enabled := chkRefreshMemoryStatus.Checked;
+  tmrMemoryStatus.Interval := seRefreshMemoryStatus.Value * 1000;
 
   //btnApply.Click;
 end;
@@ -399,10 +499,33 @@ begin
 
 
     WriteBool('Memory', 'TrimMemoryEvery', chkTrimMemoryEvery.Checked);
+    WriteInteger('Memory', 'TrimMemoryEveryValue', seTrimMemoryEvery.Value);
     WriteBool('Memory', 'TrimMemoryWhenOver', chkTrimMemoryWhenOver.Checked);
+    WriteInteger('Memory', 'TrimMemoryWhenOverValue', seTrimMemoryWhenOver.Value);
+    WriteBool('Memory', 'RefreshMemoryStatus', chkRefreshMemoryStatus.Checked);
+    WriteInteger('Memory', 'RefreshMemoryStatusValue', seRefreshMemoryStatus.Value);
+
     WriteBool('Memory', 'TrimMemoryWhenProgramStart', chkTrimMemoryWhenProgramStart.Checked);
+    //OPTIONS
+    WriteBool('Options', 'StartUpWindows', chkStartUpWindows.Checked);
+    WriteBool('Options', 'StartMinimized', chkStartMinimized.Checked);
+    WriteBool('Options', 'MinimizedWhenClose', chkMinimizedWhenClose.Checked);
     Free;
   end;
+end;
+
+procedure TfrmMain.Apply();
+begin
+  Caption := APP_TITLE + ' - Please Wait...';
+  Application.ProcessMessages;
+  Status();
+  case cbbMode.ItemIndex of
+    0: Auto();
+    1: Basic();
+    2: Advanced()
+    else;
+  end;
+  Caption := APP_TITLE;
 end;
 
 procedure TfrmMain.Advanced();
@@ -570,10 +693,10 @@ begin
 end;
 
 
-procedure TfrmMain.btnStatusClick(Sender: TObject);
+procedure TfrmMain.btnHideClick(Sender: TObject);
 
 begin
-  Status();
+  Application.Minimize;
 end;
 
 procedure TfrmMain.btnTrimMemoryClick(Sender: TObject);
@@ -581,35 +704,6 @@ begin
   TrimMemory(True);
 end;
 
-procedure TfrmMain.Button1Click(Sender: TObject);
-var
-  bmp: TBitmap;
-  R: TRect;
-begin
-  SetRect(R, 0, 0, 16, 16);
-  bmp := TBitmap.Create;
-  bmp.SetSize(16, 16);
-
-  with bmp.Canvas do
-  begin
-    bmp.Canvas.Brush.Color := $81F682;
-    bmp.Canvas.FillRect(r);
-
-
-    bmp.Canvas.Pen.Color := $1EB100;
-    Rectangle(r);
-    //Image2.Picture.Assign(bmp);
-    //Font.Color := clBlack;
-    //DrawTextCentered(bmp.Canvas, r, '10');
-  end;
-  Image1.Picture.Assign(bmp);
-end;
-
-procedure TfrmMain.Button2Click(Sender: TObject);
-
-begin
-
-end;
 
 procedure TfrmMain.cbbModeChange(Sender: TObject);
 begin
@@ -622,17 +716,23 @@ begin
   if not FActivated then
   begin
     FActivated := True;
-    Caption := APP_TITLE + ' - Please Wait...';
-    Status();
-    LoadOptions();
-    btnApply.Click;
-    Caption := APP_TITLE;
+
   end;
 end;
 
 procedure TfrmMain.FormClose(Sender: TObject; var CloseAction: TCloseAction);
 begin
-  SaveOptions();
+  if chkMinimizedWhenClose.Checked then
+  begin
+    CloseAction := caNone;
+    Application.Minimize;
+    exit;
+  end;
+
+  if Messaggio('Save all options?', mtConfirmation) then
+    SaveOptions();
+
+  CloseAction := caFree;
 end;
 
 procedure TfrmMain.FormCreate(Sender: TObject);
@@ -644,12 +744,17 @@ begin
   IniFilename := ChangeFileExt(ExtractFileName(Application.ExeName), '.ini');
   DriveLetter := AppDir.Substring(0, 3);
 
+  tiTray.BalloonTitle := APP_TITLE;
   pcMain.ActivePageIndex := 0;
   pcAdvanced.ActivePageIndex := 0;
 
 
-
+  GenerateIconsNumber();
   LoadOptions();
+  Apply();
+
+  if not chkStartMinimized.Checked then
+    tiTrayDblClick(tiTray);
 end;
 
 procedure TfrmMain.FormShow(Sender: TObject);
@@ -670,6 +775,15 @@ begin
     TxT.Text := TB.Position.ToString;
 end;
 
+procedure TfrmMain.tiTrayDblClick(Sender: TObject);
+begin
+  if Showing then exit;
+
+  Show();
+  WindowState := wsNormal;
+  Application.BringToFront();
+end;
+
 procedure TfrmMain.tmrMemoryStatusTimer(Sender: TObject);
 begin
   try
@@ -683,16 +797,18 @@ begin
   end;
 end;
 
+
 procedure TfrmMain.btnApplyClick(Sender: TObject);
 begin
-  case cbbMode.ItemIndex of
-    0: Auto();
-    1: Basic();
-    2: Advanced()
-    else;
-  end;
-
+  Apply();
   SaveOptions();
+end;
+
+procedure TfrmMain.apAppMinimize(Sender: TObject);
+begin
+  Hide();
+  WindowState := wsMinimized;
+
 end;
 
 end.
