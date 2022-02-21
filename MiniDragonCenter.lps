@@ -3,14 +3,15 @@
   <ProjectSession>
     <PathDelim Value="\"/>
     <Version Value="12"/>
-    <BuildModes Active="Default"/>
+    <BuildModes Active="Release"/>
     <Units>
       <Unit>
         <Filename Value="MiniDragonCenter.lpr"/>
         <IsPartOfProject Value="True"/>
-        <EditorIndex Value="-1"/>
-        <CursorPos X="26" Y="11"/>
+        <EditorIndex Value="1"/>
+        <CursorPos X="45" Y="14"/>
         <UsageCount Value="40"/>
+        <Loaded Value="True"/>
       </Unit>
       <Unit>
         <Filename Value="mainform.pas"/>
@@ -20,8 +21,8 @@
         <ResourceBaseClass Value="Form"/>
         <UnitName Value="MainForm"/>
         <IsVisibleTab Value="True"/>
-        <TopLine Value="225"/>
-        <CursorPos X="45" Y="235"/>
+        <TopLine Value="819"/>
+        <CursorPos X="25" Y="831"/>
         <UsageCount Value="40"/>
         <Loaded Value="True"/>
         <LoadedDesigner Value="True"/>
@@ -141,7 +142,7 @@
         <UsageCount Value="10"/>
       </Unit>
     </Units>
-    <JumpHistory HistoryIndex="21">
+    <JumpHistory HistoryIndex="23">
       <Position>
         <Filename Value="mainform.pas"/>
         <Caret Line="123" Column="62" TopLine="175"/>
@@ -229,6 +230,14 @@
       <Position>
         <Filename Value="mainform.pas"/>
         <Caret Line="248" Column="40" TopLine="256"/>
+      </Position>
+      <Position>
+        <Filename Value="mainform.pas"/>
+        <Caret Line="234" Column="45" TopLine="225"/>
+      </Position>
+      <Position>
+        <Filename Value="mainform.pas"/>
+        <Caret Line="235" Column="29" TopLine="225"/>
       </Position>
     </JumpHistory>
     <RunParams>

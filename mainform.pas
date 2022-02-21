@@ -828,7 +828,7 @@ begin
   tiTray.BalloonTitle := APP_TITLE;
   pcMain.ActivePageIndex := 0;
   pcAdvanced.ActivePageIndex := 0;
-  tsDeveloped.Visible := InDebugMode();
+  tsDeveloped.TabVisible := InDebugMode();
   lstAbout.Row := 0;
 
   GenerateIconsNumber();
