@@ -6,8 +6,8 @@ interface
 
 uses
   Windows, Classes, SysUtils, Forms, Controls, Graphics, Dialogs, StdCtrls,
-  ComCtrls, ExtCtrls, Spin, ValEdit, FunctionsUtils, ShellApi, jwatlhelp32,
-  jwapsapi, IniFiles;
+  ComCtrls, ExtCtrls, Spin, ValEdit, PopupNotifier, Menus, FunctionsUtils,
+  ShellApi, jwatlhelp32, jwapsapi, IniFiles, Registry;
 
 type
   DWORDLONG = uint64;
@@ -32,7 +32,9 @@ type
     apApp: TApplicationProperties;
     btnApply: TButton;
     btnHide: TButton;
+    btnExit: TButton;
     btnTrimMemory: TButton;
+    btnCreateScheduleTask: TButton;
     cbbMode: TComboBox;
     chkStartMinimized: TCheckBox;
     chkMinimizedWhenClose: TCheckBox;
@@ -71,13 +73,22 @@ type
     lblAdvanced9: TLabel;
     lblUsageMem: TLabel;
     lblPercentMem: TLabel;
+    Separator1: TMenuItem;
+    mniShow: TMenuItem;
+    mniClose: TMenuItem;
     mmoLog: TMemo;
     pcAdvanced: TPageControl;
     pcMain: TPageControl;
     pbMemory: TProgressBar;
+    pnNotifier: TPopupNotifier;
+    pmTrayIcon: TPopupMenu;
     seTrimMemoryEvery: TSpinEdit;
     seTrimMemoryWhenOver: TSpinEdit;
     seRefreshMemoryStatus: TSpinEdit;
+    tsDeveloped: TTabSheet;
+    tmrNotifier: TTimer;
+    tmrTrimMemoryOver: TTimer;
+    tmrTrimMemoryEvery: TTimer;
     tsAbout: TTabSheet;
     tmrMemoryStatus: TTimer;
     tsMemory: TTabSheet;
@@ -100,20 +111,32 @@ type
     tsLog: TTabSheet;
     tsGeneral: TTabSheet;
     tiTray: TTrayIcon;
-    ValueListEditor1: TValueListEditor;
+    lstAbout: TValueListEditor;
     procedure apAppMinimize(Sender: TObject);
     procedure btnApplyClick(Sender: TObject);
+    procedure btnCreateScheduleTaskClick(Sender: TObject);
+    procedure btnExitClick(Sender: TObject);
     procedure btnHideClick(Sender: TObject);
     procedure btnTrimMemoryClick(Sender: TObject);
+    procedure Button1Click(Sender: TObject);
     procedure cbbModeChange(Sender: TObject);
+    procedure chkTrimMemoryEveryChange(Sender: TObject);
+    procedure chkTrimMemoryEveryClick(Sender: TObject);
+    procedure chkTrimMemoryWhenOverClick(Sender: TObject);
     procedure FormActivate(Sender: TObject);
     procedure FormClose(Sender: TObject; var CloseAction: TCloseAction);
     procedure FormCreate(Sender: TObject);
-    procedure FormShow(Sender: TObject);
+    procedure mniShowClick(Sender: TObject);
     procedure tbAdvanced1Change(Sender: TObject);
     procedure tiTrayDblClick(Sender: TObject);
     procedure tmrMemoryStatusTimer(Sender: TObject);
+    procedure tmrNotifierTimer(Sender: TObject);
+    procedure tmrTrimMemoryEveryTimer(Sender: TObject);
+    procedure tmrTrimMemoryOverTimer(Sender: TObject);
+    procedure lstAboutDblClick(Sender: TObject);
   private
+    FSeconds: integer;
+    FPercent: integer;
     FActivated: boolean;
     procedure GenerateIconsNumber();
   public
@@ -124,8 +147,11 @@ type
     procedure Auto();
     procedure Advanced();
     procedure Apply();
+    procedure TrimMemoryWhenOver();
     procedure MemoryUsage();
     procedure TrimMemory(const ShowMessage: boolean = False);
+    procedure Notifier(aText: string);
+    procedure RunOnStartup(bRemove: boolean = False);
   end;
 
 var
@@ -134,7 +160,7 @@ var
   AppDir: string;
   MSIApp: string;
   DriveLetter: string;
-  FPid: cardinal;
+
 
 const
   APP_TITLE = 'MiniDragonCenter v2022.1';
@@ -143,6 +169,8 @@ function GlobalMemoryStatusEx(var lpBuffer: TMemoryStatusEx): BOOL; stdcall; ext
 
 implementation
 
+uses ShlObj, ActiveX, ComObj;
+
 {$R *.lfm}
 
 { TfrmMain }
@@ -150,8 +178,25 @@ implementation
 procedure Debug(Value: string);
 begin
   OutputDebugString(PChar(Value));
+
   frmMain.mmoLog.Lines.Add(Value);
+  if frmMain.mmoLog.Lines.Count > 1000 then frmMain.mmoLog.Lines.Delete(0);
   SendMessage(frmMain.mmoLog.Handle, EM_LINESCROLL, 0, frmMain.mmoLog.Lines.Count);
+end;
+
+procedure OpenLink(Value: string);
+begin
+  ShellExecute(GetForegroundWindow, 'open', PChar(Value), '', '', SW_SHOWNORMAL);
+end;
+
+function RunOnStartupRegistry(RemoveKey: boolean): boolean;
+const
+  REG_KEY = 'MiniDragonCenter';
+begin
+
+  Result := RunOnStartup(REG_KEY, Application.ExeName, RemoveKey);
+  Debug('RunOnStartupRegistry: ' + BoolToStr(Result, True));
+
 end;
 
 function DrawTextCentered(Canvas: TCanvas; const R: TRect; S: string): integer;
@@ -174,19 +219,6 @@ begin
   Result := DrawParams.uiLengthDrawn;
 end;
 
-function TerminateProcessByID(ProcessID: cardinal): boolean;
-var
-  hProcess: THandle;
-begin
-  Result := False;
-  hProcess := OpenProcess(PROCESS_TERMINATE, False, ProcessID);
-  if hProcess > 0 then
-    try
-      Result := Win32Check(Windows.TerminateProcess(hProcess, 0));
-    finally
-      CloseHandle(hProcess);
-    end;
-end;
 
 function CalcolatePercent(N1: integer; N2: integer): double;
 
@@ -213,69 +245,78 @@ end;
 
 
 
-function GetDosOutput(CommandLine: string; Work: string = 'C:\'): string;
+procedure CreateShortCut();
 var
-  SA: TSecurityAttributes;
-  SI: TStartupInfo;
-  PI: TProcessInformation;
-  StdOutPipeRead, StdOutPipeWrite: THandle;
-  WasOK: boolean;
-  Buffer: array[0..255] of ansichar;
-  BytesRead: cardinal;
-  WorkDir: string;
-  Handle: boolean;
+  IObject: IUnknown;
+  ISLink: IShellLink;
+  IPFile: IPersistFile;
+  PIDL: PItemIDList;
+  InFolder: array[0..MAX_PATH] of char;
+  TargetName: string;
+  LinkName: WideString;
+
 begin
-  Result := '';
-  if not FileExists(MSIApp) then
+
+  TargetName := Application.ExeName;
+
+  IObject := CreateComObject(CLSID_ShellLink);
+  ISLink := IObject as IShellLink;
+  IPFile := IObject as IPersistFile;
+
+  with ISLink do
   begin
-    Messaggio('MsiFanControl.exe non found!');
-    Exit;
+    SetPath(PChar(TargetName));
+    SetWorkingDirectory(PChar(ExtractFilePath(TargetName)));
   end;
 
-  if FPid > 0 then TerminateProcessByID(FPid);
+  SHGetSpecialFolderLocation(0, CSIDL_DESKTOPDIRECTORY, PIDL);
+  SHGetPathFromIDList(PIDL, InFolder);
 
-  with SA do
+  LinkName := ChangeFileExt(Application.ExeName, '.lnk');
+  IPFile.Save(PWChar(LinkName), False);
+end;
+
+procedure TfrmMain.RunOnStartup(bRemove: boolean = False);
+var
+  A, B, User, STARTUP: string;
+  //const
+  //STARTUP = 'C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp\';
+begin
+
+  User := GetEnvironmentVariable('USERNAME');
+  STARTUP := 'C:\Users\' + User + '\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup\';
+
+  //CREATE LNK IN APP FOLDER
+  A := ChangeFileExt(Application.ExeName, '.lnk');
+  B := STARTUP + ExtractFileName(A);
+
+  if not FileExists(A) then CreateShortCut;
+
+  ForceDirectories(STARTUP);
+
+  DeleteFile(b);
+  if not bRemove then CopyFile(PChar(A), PChar(B), False);
+
+  Debug('RunOnStartup Remove: ' + BoolToStr(bRemove, True));
+end;
+
+procedure TfrmMain.Notifier(aText: string);
+
+var
+  X, Y: integer;
+begin
+  if tmrNotifier.Enabled then
   begin
-    nLength := SizeOf(SA);
-    bInheritHandle := True;
-    lpSecurityDescriptor := nil;
+    tmrNotifier.Enabled := False;
+    pnNotifier.Hide;
   end;
-  CreatePipe(StdOutPipeRead, StdOutPipeWrite, @SA, 0);
-  try
-    with SI do
-    begin
-      FillChar(SI, SizeOf(SI), 0);
-      cb := SizeOf(SI);
-      dwFlags := STARTF_USESHOWWINDOW or STARTF_USESTDHANDLES;
-      wShowWindow := SW_HIDE;
-      hStdInput := GetStdHandle(STD_INPUT_HANDLE); // don't redirect stdin
-      hStdOutput := StdOutPipeWrite;
-      hStdError := StdOutPipeWrite;
-    end;
-    WorkDir := Work;
-    Handle := CreateProcess(nil, PChar('cmd.exe /C ' + CommandLine), nil, nil, True, 0, nil, PChar(WorkDir), SI, PI);
-    CloseHandle(StdOutPipeWrite);
+  pnNotifier.Title := Application.Title;
+  pnNotifier.Text := aText;
 
-    FPid := PI.hProcess;
-
-    if Handle then
-      try
-        repeat
-          WasOK := ReadFile(StdOutPipeRead, Buffer, 255, BytesRead, nil);
-          if BytesRead > 0 then
-          begin
-            Buffer[BytesRead] := #0;
-            Result := Result + Buffer;
-          end;
-        until not WasOK or (BytesRead = 0);
-        WaitForSingleObject(PI.hProcess, INFINITE);
-      finally
-        CloseHandle(PI.hThread);
-        CloseHandle(PI.hProcess);
-      end;
-  finally
-    CloseHandle(StdOutPipeRead);
-  end;
+  x := Screen.PrimaryMonitor.Left + Screen.PrimaryMonitor.Width - pnNotifier.vNotifierForm.Width;
+  y := Screen.PrimaryMonitor.top + Screen.PrimaryMonitor.Height - pnNotifier.vNotifierForm.Height - 50;
+  pnNotifier.ShowAtPos(x, y);
+  tmrNotifier.Enabled := True;
 end;
 
 procedure TfrmMain.GenerateIconsNumber();
@@ -333,6 +374,12 @@ begin
   ImageNumber.Free;
 end;
 
+procedure TfrmMain.TrimMemoryWhenOver();
+begin
+  if not chkTrimMemoryWhenOver.Checked then exit;
+
+end;
+
 procedure TfrmMain.MemoryUsage();
 var
   MemStatus: TMemoryStatusEx;
@@ -361,6 +408,8 @@ begin
   MemAvi := MemStatus.ullAvailPhys div (1024 * 1024);
   MemUsg := MemTot - MemAvi;
   Percent := Trunc(CalcolatePercent(MemTot, MemUsg));
+  FPercent := Percent;
+
   pbMemory.Max := MemTot;
   pbMemory.Position := MemUsg;
 
@@ -411,25 +460,16 @@ begin
   MemoryUsage();
   AfterTrim := pbMemory.Position;
 
-  AfterTrim := BeforeTrim - AfterTrim;
-  //if ShowMessage then
-  //  Messaggio('Memory Trim (MB): ' + AfterTrim.ToString, mtInformation)
-  //else
-  //  Debug('Error showing process list');
+  AfterTrim := AfterTrim - BeforeTrim;
+  if AfterTrim < 0 then AfterTrim := 0;
 
+  if not ShowMessage then exit;
 
   if Error then
-  begin
-    tiTray.BalloonFlags := bfError;
-    tiTray.Hint := 'Error trim memory!';
-  end
+    Notifier('Error trim memory!')
   else
-  begin
-    tiTray.BalloonFlags := bfInfo;
-    tiTray.Hint := 'Memory Trim: ' + AfterTrim.ToString + 'MB';
+    Notifier('Memory Trim: ' + AfterTrim.ToString + ' MB Free');
 
-  end;
-  tiTray.ShowBalloonHint;
 end;
 
 procedure TfrmMain.LoadOptions();
@@ -512,20 +552,40 @@ begin
     WriteBool('Options', 'MinimizedWhenClose', chkMinimizedWhenClose.Checked);
     Free;
   end;
+
+  RunOnStartupRegistry(not chkStartUpWindows.Checked);
+
 end;
 
 procedure TfrmMain.Apply();
 begin
+  if not FileExists(MSIApp) then
+  begin
+    MsgBox('MsiFanControl.exe non found!');
+    Exit;
+  end;
+
   Caption := APP_TITLE + ' - Please Wait...';
   Application.ProcessMessages;
-  Status();
+
   case cbbMode.ItemIndex of
     0: Auto();
     1: Basic();
     2: Advanced()
     else;
   end;
+
+  Status();
+
   Caption := APP_TITLE;
+
+  tmrTrimMemoryOver.Interval := 60000; //seTrimMemoryWhenOver.Value * 60000;
+  tmrTrimMemoryOver.Enabled := chkTrimMemoryWhenOver.Checked;
+  Debug('Trim Memory When Over (%) Enable: ' + BoolToStr(chkTrimMemoryWhenOver.Checked, True));
+
+  tmrTrimMemoryEvery.Interval := seTrimMemoryEvery.Value * 60000;
+  tmrTrimMemoryEvery.Enabled := chkTrimMemoryEvery.Checked;
+  Debug('Trim Memory Every (Minutes) Enable: ' + BoolToStr(chkTrimMemoryEvery.Checked, True));
 end;
 
 procedure TfrmMain.Advanced();
@@ -536,7 +596,7 @@ var
   TB: TTrackBar;
   I: integer;
 begin
-
+  tiTray.Hint := 'Fan Mode: Advanced';
   sCPU := 'A';
   for I := 1 to 6 do
   begin
@@ -568,7 +628,7 @@ begin
 
   if Pos('All done', DosOut.Text) = 0 then
   begin
-    Messaggio('Error: Read Logs');
+    MsgBox('Error: Read Logs');
   end;
 
   DosOut.Free;
@@ -581,7 +641,7 @@ var
   DosOut: TStringList;
 
 begin
-
+  tiTray.Hint := 'Fan Mode: Auto';
   DosOut := TStringList.Create;
   DosOut.Text := GetDosOutput(MSIApp + ' auto', DriveLetter);
 
@@ -590,7 +650,7 @@ begin
 
   if Pos('All done', DosOut.Text) = 0 then
   begin
-    Messaggio('Error: Read Logs');
+    MsgBox('Error: Read Logs');
   end;
 
   DosOut.Free;
@@ -603,7 +663,7 @@ var
   DosOut: TStringList;
 
 begin
-
+  tiTray.Hint := 'Fan Mode: Basic';
   DosOut := TStringList.Create;
   DosOut.Text := GetDosOutput(MSIApp + ' basic /value:' + tbValue.Position.ToString, DriveLetter);
 
@@ -612,7 +672,7 @@ begin
 
   if Pos('All done', DosOut.Text) = 0 then
   begin
-    Messaggio('Error: Read Logs');
+    MsgBox('Error: Read Logs');
   end;
 
   DosOut.Free;
@@ -666,6 +726,7 @@ begin
     cbbMode.ItemIndex := 2;
     pcAdvanced.ActivePageIndex := 0;
     pcAdvanced.Enabled := True;
+
     sCPU := StringReplace(DosOut[1], 'CPU curve: [', '', [rfIgnoreCase]).Replace(']', '');
     sGPU := StringReplace(DosOut[2], 'GPU curve: [', '', [rfIgnoreCase]).Replace(']', '');
 
@@ -694,7 +755,6 @@ end;
 
 
 procedure TfrmMain.btnHideClick(Sender: TObject);
-
 begin
   Application.Minimize;
 end;
@@ -704,11 +764,32 @@ begin
   TrimMemory(True);
 end;
 
+procedure TfrmMain.Button1Click(Sender: TObject);
+
+begin
+
+end;
+
 
 procedure TfrmMain.cbbModeChange(Sender: TObject);
 begin
   tbValue.Enabled := cbbMode.ItemIndex = 1;
   pcAdvanced.Enabled := cbbMode.ItemIndex = 2;
+end;
+
+procedure TfrmMain.chkTrimMemoryEveryChange(Sender: TObject);
+begin
+
+end;
+
+procedure TfrmMain.chkTrimMemoryEveryClick(Sender: TObject);
+begin
+
+end;
+
+procedure TfrmMain.chkTrimMemoryWhenOverClick(Sender: TObject);
+begin
+
 end;
 
 procedure TfrmMain.FormActivate(Sender: TObject);
@@ -729,7 +810,7 @@ begin
     exit;
   end;
 
-  if Messaggio('Save all options?', mtConfirmation) then
+  if MsgBox('Save all options?', mtConfirmation) then
     SaveOptions();
 
   CloseAction := caFree;
@@ -737,7 +818,7 @@ end;
 
 procedure TfrmMain.FormCreate(Sender: TObject);
 begin
-  FPid := 0;
+
   FActivated := False;
   AppDir := ExtractFilePath(Application.ExeName);
   MSIApp := AppDir + 'MsiFanControl.exe';
@@ -747,7 +828,8 @@ begin
   tiTray.BalloonTitle := APP_TITLE;
   pcMain.ActivePageIndex := 0;
   pcAdvanced.ActivePageIndex := 0;
-
+  tsDeveloped.Visible := InDebugMode();
+  lstAbout.Row := 0;
 
   GenerateIconsNumber();
   LoadOptions();
@@ -755,11 +837,26 @@ begin
 
   if not chkStartMinimized.Checked then
     tiTrayDblClick(tiTray);
+
+  tmrTrimMemoryEvery.Interval := seTrimMemoryEvery.Value * 60000;
+  tmrTrimMemoryEvery.Enabled := chkTrimMemoryEvery.Checked;
+  Debug('Trim Memory Every (Minutes) Enable: ' + BoolToStr(chkTrimMemoryEvery.Checked, True));
+
+  tmrTrimMemoryOver.Interval := 60000; //seTrimMemoryWhenOver.Value * 60000;
+  tmrTrimMemoryOver.Enabled := chkTrimMemoryWhenOver.Checked;
+  Debug('Trim Memory When Over (%) Enable: ' + BoolToStr(chkTrimMemoryWhenOver.Checked, True));
+
+  if chkTrimMemoryWhenProgramStart.Checked then TrimMemory(True);
 end;
 
-procedure TfrmMain.FormShow(Sender: TObject);
-begin
 
+procedure TfrmMain.mniShowClick(Sender: TObject);
+begin
+  if Showing then exit;
+
+  Show();
+  WindowState := wsNormal;
+  Application.BringToFront();
 end;
 
 procedure TfrmMain.tbAdvanced1Change(Sender: TObject);
@@ -775,14 +872,21 @@ begin
     TxT.Text := TB.Position.ToString;
 end;
 
+
+
 procedure TfrmMain.tiTrayDblClick(Sender: TObject);
 begin
-  if Showing then exit;
-
-  Show();
-  WindowState := wsNormal;
-  Application.BringToFront();
+  if Showing then
+    Application.Minimize
+  else
+  begin
+    Show();
+    WindowState := wsNormal;
+    Application.BringToFront();
+  end;
 end;
+
+
 
 procedure TfrmMain.tmrMemoryStatusTimer(Sender: TObject);
 begin
@@ -797,11 +901,71 @@ begin
   end;
 end;
 
+procedure TfrmMain.tmrNotifierTimer(Sender: TObject);
+begin
+  tmrNotifier.Enabled := False;
+  pnNotifier.Hide;
+
+end;
+
+procedure TfrmMain.tmrTrimMemoryEveryTimer(Sender: TObject);
+begin
+  Debug('Call Trim Memory Every');
+  TrimMemory();
+end;
+
+procedure TfrmMain.tmrTrimMemoryOverTimer(Sender: TObject);
+begin
+  if FPercent > seTrimMemoryWhenOver.Value then
+  begin
+    Debug('Call Trim Memory Over');
+    TrimMemory(True);
+  end;
+end;
+
+procedure TfrmMain.lstAboutDblClick(Sender: TObject);
+var
+  Value: string;
+begin
+  Value := lstAbout.Cells[lstAbout.Col, lstAbout.Row];
+  OpenLink(Value);
+end;
+
 
 procedure TfrmMain.btnApplyClick(Sender: TObject);
 begin
   Apply();
   SaveOptions();
+end;
+
+procedure TfrmMain.btnCreateScheduleTaskClick(Sender: TObject);
+var
+  Bat: TStringList;
+  Filename: string;
+begin
+  pcMain.ActivePage := tsLog;
+  Filename := ChangeFileExt(Application.ExeName, '.bat');
+  Bat := TStringList.Create;
+  Bat.Add('SCHTASKS /DELETE /TN "\MiniDragonCenter"');
+  if MsgBox('Do you wont add schedule task?', mtConfirmation) then
+    Bat.Add('SCHTASKS /CREATE /sc ONLOGON /tn "\MiniDragonCenter" /tr "d:\Sviluppo\Lazarus\Progetti\MiniDragonCenter\Bin\MiniDragonCenter.exe"');
+  Bat.Add('EXIT');
+  Bat.SaveToFile(Filename);
+  Bat.Free;
+
+  Debug('START CreateScheduleTask');
+
+  GetDosOutput(Filename, AppDir, True);
+
+  Debug('END CreateScheduleTask');
+end;
+
+procedure TfrmMain.btnExitClick(Sender: TObject);
+begin
+  if MsgBox('Save all options?', mtConfirmation) then
+    SaveOptions();
+
+  Application.Terminate;
 end;
 
 procedure TfrmMain.apAppMinimize(Sender: TObject);
